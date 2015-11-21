@@ -17,7 +17,10 @@ static stack* stack_create() {
 	tmp->alloc = 0;
 	return tmp;
 }
-static void stack_set( void* ptr ) {
+static void stack_clear( stack* st ) {
+	st->size = 0;
+}
+static void stack_set( stack* st, void* ptr ) {
 	if ( st->size == 0 )
 		return;
 	st->data[st->size-1] = ptr;
@@ -47,6 +50,9 @@ static void* stack_pop( stack* st ) {
 	st->size -- ;
 	return tmp;
 }
+static int stack_size( stack* st ) {
+	return st->size;
+}
 
 static array* array_create() { 
 	array* tmp = (array*) malloc( sizeof(array) );
@@ -54,6 +60,18 @@ static array* array_create() {
 	tmp->size = 0;
 	tmp->alloc = 0;
 	return tmp;
+}
+static void array_clear8( array* arr, uint8 val ) {
+	uint32 i;
+	for ( i=0;i<arr->size;++i )
+		arr->data[i] = val;
+}
+static void array_clear32( array* arr, uint32 val ) {
+	uint32 i;
+	uint32* data = (uint32*) arr->data;
+	uint32 len = arr->size / sizeof( uint32 );
+	for ( i=0;i<len;++i )
+		data[i] = val;
 }
 static uint8 array_get8( array* arr, uint32 index ) {
 	if ( index >= arr->size )
@@ -96,15 +114,30 @@ static charset* charset_create() {
 	return tmp;
 }
 static void charset_add( charset* ch, int8 elem ) {
-	ch->data[elem/8] |= ( 0x1 << ( elem % 8 ) );
+	ch->data[elem/32] |= ( (uint32)(1) << ( elem % 32 ) );
 }
 static void charset_add_multiple( charset* ch, int8 elem1, int8 elem2 ) {
 	int8 i;
 	for ( i=elem1;i<elem2;i++ )
-		ch->data[i/8] |= ( 0x1 << ( i % 8 ) );
+		ch->data[i/32] |= ( (uint32)(1) << ( i % 32 ) );
 }
 static uint32 charset_check( charset* ch, int8 elem ) {
-	return ( ( ch->data[elem/8] & ( 0x1 << ( elem % 8 ) ) ) > 0 );
+	uint32 big = elem/32;
+	uint32 small = elem % 32;
+	uint32 d = ch->data[big];
+	uint32 off = ( (uint32)(1) << small );
+	return ( ( d & off ) > 0 );
+}
+
+static charset* charset_any() {
+	static charset self;
+	if ( self.data[0] == 0 ) {
+		self.refcount = 0;
+		uint32 i;
+		for ( i=0;i<8;i++ )
+			self.data[i] = 0xFFFFFFFF;
+	}
+	return &self;
 }
 
 /*------------------------------------------
@@ -132,10 +165,11 @@ struct atom_charset_t {
 };
 struct atom_group_init_t {
 	bool hit; // has the group been entered
-	atom_group_final* end;
+	atom* end;
 };
 struct atom_group_final_t {
-	atom_group_init* start; // pointer to group start
+	uint32 scandex;
+	atom* start; // pointer to group start
 };
 struct atom_start_line_t {
 	const char** compare; // dereferenced to the start of the file the
@@ -147,88 +181,224 @@ struct atom_start_line_t {
 +-----------------------------------------*/
 
 struct rebuilder_t {
-	int no_error;
-	stack* groups;
-	stack* chain_start;
-	stack* chain_current;
+	int error;		// error value
+	stack* root;	// group origin (atom*)
+	stack* subroot;	// chain origin (atom*)
 };
 typedef struct rebuilder_t rebuilder;
 
 static rebuilder* rebuilder_create() {
 	rebuilder* re = (rebuilder*) malloc( sizeof(rebuilder) );
-	re->no_error = 0;
-	re->groups = stack_create();
-	re->chain_start = stack_create();
-	re->chain_current = stack_create();
+	re->error = 0;
+	re->root = stack_create();
+	re->subroot = stack_create();
 	return re;
 }
 
 /*------------------------------------------
 | Functions to Control Regex Components
 +-----------------------------------------*/
-static const char* compare_literal( atom* input, const char* str ) {
-	if ( (*input->info->working) >= input->info->uppder )
+static const char* compare_literal( atom** reference, const char* str ) {
+	atom* input = *reference;
+	
+	uint32* working = (uint32*)(input->parent->working->data + input->info->working);
+	if ( input->info->upper != -1 && *working >= input->info->upper ) {
+		(*reference) = input->failure;
 		return str;
+	}
 	
 	atom_literal* lit = (atom_literal*) input->data;
 	
+	const char* istr = str;
 	do {
 		
 		const char* i = lit->data;
+		printf( "Test this string: '%s'\n", i );
 		
-		for ( ;*i!='\0';++i,++str )
-			if ( *i != *str )
-				return NULL;
+		for ( ;*i!='\0';++i,++str ) {
+			printf( "Check %c vs %c\n", *i, *str );
+			if ( *i != *str ) {
+				(*reference) = input->failure;
+				return istr;
+			}
+		}
 		
-		(*input->info->working) ++ ;
+		++ *working;
 		
-	} while ( (*input->info->working) < input->info->lower );
+	} while ( *working < input->info->lower );
 	
+	if ( input->info->upper == -1 || *working < input->info->upper ) {
+		stack_push( input->parent->track_atom, (void*)input );
+		stack_push( input->parent->track_string, (void*)str );
+	}
+	
+	(*reference) = input->success;
 	return str;
 }
-
 static void destroy_literal( void* addr ) {
 	free( ((atom_literal*) addr)->data );
 	free( (atom_literal*) addr );
 }
+static int print_literal( void* addr ) {
+	printf( "lit:'%s'", ((atom_literal*)addr)->data );
+	return 0;
+}
 
-static const char* compare_group_init( atom* input, const char* str ) {
+
+static const char* compare_charset( atom** reference, const char* str ) {
+	atom* input = *reference;
+	
+	uint32* working = (uint32*)(input->parent->working->data + input->info->working);
+	if ( input->info->upper != -1 && *working >= input->info->upper ) {
+		(*reference) = input->failure;
+		return str;
+	}
+	
+	atom_charset* data = (atom_charset*) input->data;
+	charset* cset = data->checkset;
+	
+	do {
+		
+		printf( "Test this charset %c\n", *str );
+		uint32 found = charset_check( cset, *str );
+		if ( (data->exclude && found) || (!(data->exclude)&&!found) ) {
+			(*reference) = input->failure;
+			return str;
+		}
+		
+		++ str;
+		++ *working;
+		
+	} while ( *working < input->info->lower );
+	
+	if ( input->info->upper == -1 || *working < input->info->upper ) {
+		stack_push( input->parent->track_atom, (void*)input );
+		stack_push( input->parent->track_string, (void*)str );
+	}
+	
+	printf( "Charset matched!\n" );
+	(*reference) = input->success;
+	return str;
+}
+static void destroy_charset( void* addr ) {
+	atom_charset* data = (atom_charset*) addr;
+	charset* cset = data->checkset;
+	free( data );
+	if ( -- cset->refcount <= 0 )
+		free( cset );
+}
+static int print_charset( void* addr ) {
+	charset* cset = ((atom_charset*) addr)->checkset;
+	printf( "cset:'%x %x %x %x %x %x %x %x'(%d)", cset->data[0],
+												  cset->data[1],
+												  cset->data[2],
+												  cset->data[3],
+												  cset->data[4],
+												  cset->data[5],
+												  cset->data[6],
+												  cset->data[7],
+												  cset->refcount );
+	return 0;
+}
+
+
+static const char* compare_group_init( atom** reference, const char* str ) {
+	atom* input = *reference;
 	atom_group_init* gr = (atom_group_init*) input->data;
 	gr->hit = 1;
+	
+	uint32* working = (uint32*)(input->parent->working->data + input->info->working);
+	if ( input->info->upper == -1 || *working < input->info->upper )
+		(*reference) = input->success;
+	else
+		(*reference) = gr->end;
+	
 	return str;
 }
 static void destroy_group_init( void* addr ) {
 	free( (atom_group_init*) addr );
 }
-static const char* compare_group_final( atom* input, const char* str ) {
+static int print_group_init( void* addr ) {
+	printf( "group:initial" );
+	return 0;
+}
+
+
+static const char* compare_group_final( atom** reference, const char* str ) {
+	atom* input = *reference;
+	
+	atom_group_final* gr = (atom_group_final*) input->data;
+	atom* init = gr->start;
+	atom_group_init* begin = (atom_group_init*) init->data;
+	
+	uint32* working = (uint32*)(input->parent->working->data + input->info->working);
+	if ( begin->hit ) {
+		++ (*working);
+		begin->hit = 0;
+	}
+	
+	if ( *working < input->info->lower ) {
+		regex* parent = input->parent;
+		
+		uint32 start = input->info->working / sizeof( uint32 );
+		uint32 end = gr->scandex / sizeof( uint32 );
+		
+		for ( ;start<end;++start )
+			((uint32*)parent->working->data)[start] = 0;
+		
+		(*reference) = init;
+	} else {
+		if ( *working == -1 || *working < input->info->upper ) {
+			stack_push( input->parent->track_atom, (void*)init );
+			stack_push( input->parent->track_string, (void*)str );
+		}
+		(*reference) = input->success;
+	}
+	
 	return str;
 }
 static void destroy_group_final( void* addr ) {
 	free( (atom_group_final*) addr );
 }
+static int print_group_final( void* addr ) {
+	printf( "group:final" );
+	return 0;
+}
+
+
+
+
+
 
 static atom* atom_create( regex* p,
 						  recheckfunc c, 
 						  void* data,
-						  rekillfunc k ) {
+						  rekillfunc k,
+						  reprintfunc r,
+						  quantifier* quan ) {
 	atom* a = (atom*) malloc( sizeof(atom) );
 	a->parent = p;
 	a->success = NULL;
 	a->failure = NULL;
-	quantifier* q = (quantifier*) malloc( sizeof(quantifier) );
-		q->lower = 1;
-		q->upper = 1;
-		array_append32( p->working, 0 );
-		q->working = (uint32*)p->working->data + p->working->size - sizeof( uint32 );
-	a->info = q;
+	if ( quan == NULL && data != NULL ) {
+		quantifier* q = (quantifier*) malloc( sizeof(quantifier) );
+			q->lower = 1;
+			q->upper = 1;
+			q->working = p->working->size;
+			printf( "Working: %d\n", q->working / sizeof( uint32 ) );
+			array_append32( p->working, 0 );
+		a->info = q;
+	} else
+		a->info = quan;
 	a->func = c;
 	a->dealloc = k;
-	a->pself = NULL;
+	a->pself = r;
 	a->data = data;
 	return a;
 }
 static void atom_destroy( atom* atom ) {
-	atom->dealloc( atom->data );
+	if ( atom->dealloc != NULL )
+		atom->dealloc( atom->data );
 	free( atom->info );
 	free( atom );
 }
@@ -248,88 +418,268 @@ static bool is_quantifier( char n ) {
 			  n == '+' );
 }
 
-static void set_prev( regex* p, rebuilder* b, atom* natom ) {
-	if ( p->current == NULL )
-		p->initial = natom;
-	else if ( stack_size( b->chain_current ) == 0 )
-		p->current->success = natom;
-	else {
-		p->current->failure = natom;
-		stack_set( b->chain_current, natom );
-	}
-	p->current = natom;
+// Link the current atom to a new incoming atom
+static void link_to_prev( regex* re, atom* natom ) {
+	if ( re->initial == NULL )
+		re->initial = natom;
+	
+	if ( re->current == NULL )
+		re->current = natom;
+	else
+		re->current->success = natom;
+	
+	re->current = natom;
 }
-static void close_literal( regex* p, char* buffer ) {
-	if ( *buffer == '\0' )
+
+// Iterates backwards through the subroots to build a failure OR chain
+static void link_options( regex* re, rebuilder* build, atom* final ) {
+	atom* root = stack_top( build->root );
+	atom* endsub = stack_top( build->subroot );
+	while ( endsub != root ) {
+		atom* tmp = endsub->success;
+		
+		stack_pop( build->subroot );
+		atom* beginsub = stack_top( build->subroot );
+		atom* iterate = beginsub->success;
+		printf( "    Link %p to %p\n", iterate, endsub );
+		
+		while ( iterate != tmp ) {
+			printf( "    %p fails to %p\n", iterate, tmp );
+			iterate->failure = tmp;
+			iterate = iterate->success;
+		}
+		
+		endsub->success = final;
+		endsub = beginsub;
+	}
+}
+
+
+static void close_regex( regex* re ) {
+	atom* empty = atom_create( re, NULL, NULL, NULL, NULL, NULL );
+	link_to_prev( re, empty );
+	printf( "%p Close Regex\n", empty );
+}
+// Terminate a literal and create an atom for it
+static void close_literal( regex* re, const char* buffer, uint32_out size ) {
+	if ( *size == 0 )
 		return;
 	
 	atom_literal* lit = (atom_literal*) malloc( sizeof(atom_literal) );
-	atom* ret = atom_create( p, compare_literal, lit, destroy_literal );
+	lit->data = (char*) malloc( sizeof(char) * (*size+1) );
+	memcpy( lit->data, buffer, *size );
+	lit->data[*size] = '\0';
 	
-	lit->data = (char*) malloc( sizeof(char) * strlen(buffer) );
-	strcpy( lit->data, buffer );
+	atom* ret = atom_create( re, 
+							 compare_literal, 
+							 lit, 
+							 destroy_literal, 
+							 print_literal, 
+							 NULL );
 	
-	buffer[0] = '\0';
+	*size = 0;
 	
-	set_prev( p, ret );
+	link_to_prev( re, ret );
+	
+	printf( "%p = '%s'\n", ret, lit->data );
 }
-static void create_group( regex* p, rebuilder* b ) {
+
+// Create an open group node
+static void create_group( regex* re, rebuilder* build ) {
 	atom_group_init* gr = (atom_group_init*) malloc( sizeof(atom_group_init) );
-	gr->hit = false;
+	gr->hit = 0;
 	gr->end = NULL;
-	atom* ret = atom_create( p, compare_group_init, gr, destroy_group_init );
+	atom* ret = atom_create( re,
+							 compare_group_init, 
+							 gr, 
+							 destroy_group_init, 
+							 print_group_init,
+							 NULL );
 	
-	stack_push( b->groups, gr );
-	stack_push( b->chain_start, NULL );
-	stack_push( b->chain_current, NULL );
+	// assign new root
+	stack_push( build->root, ret );
+	stack_push( build->subroot, ret );
 	
-	set_prev( p, ret );
+	link_to_prev( re, ret );
+	
+	printf( "%p Group\n", ret );
+	printf( "    With Subroot %p\n", ret );
 }
-static void close_group( regex* p, rebuilder* b ) {
-	if ( b->groups->size == 0 ) {
-		b->no_error = REGEX_EXTRA_CLOSE_GROUP;
+
+// Create a close group node and bind it to the open group node
+static void close_group( regex* re, rebuilder* build ) {
+	if ( build->root->size == 0 ) {
+		build->error = REGEX_EXTRA_CLOSE_GROUP;
 		return;
 	}
 	
 	atom_group_final* gr = (atom_group_final*) malloc( sizeof(atom_group_final) );
-	atom* ret = atom_create( p, compare_group_final, gr, destroy_group_final );
+	gr->start = (atom*) stack_top( build->root );
+	gr->scandex = re->working->size;
+	atom* ret = atom_create( re,
+							 compare_group_final, 
+							 gr, 
+							 destroy_group_final, 
+							 print_group_final,
+							 gr->start->info );
 	
-	gr->start = (atom_group_init*) stack_top( b->groups );
-	gr->start->end = gr;
+	((atom_group_init*)(gr->start->data))->end = ret;
 	
-	atom* st = (atom*) stack_top( b->chain_start );
-	atom* cu = (atom*) stack_top( b->chain_current );
+	link_to_prev( re, ret );
 	
-	while ( st != cu ) {
-		st->success = ret;
-		st = st->failure;
-	}
-	cu->success = ret;
-	cu = cu->failure;
+	link_options( re, build, ret );
+	stack_pop( build->root );
 	
-	stack_pop( b->groups );
-	stack_pop( b->chain_start );
-	stack_pop( b->chain_current );
-	
-	set_prev( p, ret );
+	printf( "%p Close %p\n", ret, gr->start );
 }
-static void move_chain( regex* p, rebuilder* b ) {
-	if ( p->current == NULL || is_group_init( p->current ) ) {
-		b->no_error = REGEX_CHAIN_HAS_NO_INITIAL;
+static void move_chain( regex* re, rebuilder* build ) {
+	if ( re->current == NULL || is_group_init( re->current ) ) {
+		build->error = REGEX_CHAIN_HAS_NO_INITIAL;
 		return;
 	}
 	
-	// a previous chain was already defined
-	if ( stack_top( b->chain_start ) != NULL ) {
+	printf( "    With Subroot %p\n", re->current );
+	
+	stack_push( build->subroot, re->current );
+}
+static const char* create_charset( regex* re, rebuilder* build, const char* str ) {
+	if ( *str == '.' ) {
+		charset* cset = charset_any();
+		++ cset->refcount;
 		
+		atom_charset* data = (atom_charset*) malloc( sizeof( atom_charset ) );
+		data->exclude = 0;
+		data->checkset = cset;
+		
+		atom* ret = atom_create( re,
+								 compare_charset,
+								 data,
+								 destroy_charset,
+								 print_charset,
+								 NULL );
+		link_to_prev( re, ret );
+		return ++ str;
+	} else {
+		charset* cset = charset_create();
+		cset->refcount = 1;
+		
+		atom_charset* data = (atom_charset*) malloc( sizeof( atom_charset ) );
+		data->checkset = cset;
+		
+		if ( *str == '^' ) {
+			data->exclude = 1;
+			++ str;
+		} else
+			data->exclude = 0;
+		
+		char last2 = '\0';
+		char last = *str;
+		++ str;
+		for ( ;*str!='\0'&&*str!=']';++str ) {
+			if ( last == '\0' )
+				continue;
+			if ( last == '-' ) {
+				if ( last2 == '\0' || *str == '-' || *str < last2 ) {
+					build->error = REGEX_INCORRECT_CHAR_SPAN;
+					return str;
+				}
+				charset_add_multiple( cset, last2, *str );
+				last2 = '\0';
+				last = '\0';
+			} else {
+				charset_add( cset, last );
+				last2 = last;
+				last = *str;
+			}
+		}
+		
+		if ( last != '\0' )
+			charset_add( cset, last );
+		
+		if ( *str==']' )
+			++ str;
+		
+		atom* ret = atom_create( re,
+								 compare_charset,
+								 data,
+								 destroy_charset,
+								 print_charset,
+								 NULL );
+		link_to_prev( re, ret );
+		
+		return str;
+	}
+}
+
+
+void assign_quantifier( regex* re, rebuilder* build, int low, int high ) {
+	if ( re->current == NULL ) {
+		build->error = REGEX_QUANTIFIER_TO_NONE;
+		return;
 	}
 	
-	if ( stack_size( b->groups ) == 0 )
-		stack_push( b->chain_start, p->initial );
-	else
-		stack_push( b->chain_start, stack_top( b->groups )->success );
+	re->current->info->lower = low;
+	re->current->info->upper = high;
 	
-	stack_push( b->chain_current, p->current );
+	printf( "    Assign Quantifier {%d,%d} to %p\n", low, high, re->current );
+}
+const char* assign_quan_span( regex* re, rebuilder* build, const char* init ) {
+	if ( *init != '{' )
+		return init;
+	++ init;
+	
+	char buffer[80];
+	
+	// clear out whitespace
+	for ( ;*init==' '||*init=='\t';++init );
+	
+	char* iter = buffer;
+	for ( ;*init!=' '&&*init!='\t'&&*init!=','&&*init!='}';++init ) {
+		if ( *init < '0' || *init > '9' ) {
+			build->error = REGEX_SYNTAX_ERROR;
+			return init;
+		}
+		*iter = *init;
+		++ iter;
+	}
+	*iter = '\0';
+	int low = atoi(buffer);
+	int high = low;
+	
+	for ( ;*init==' '||*init=='\t';++init );
+	
+	if ( *init == ',' ) {
+	
+		++ init;
+		for ( ;*init==' '||*init=='\t';++init );
+		
+		iter = buffer;
+		for ( ;*init!=' '&&*init!='\t'&&*init!=','&&*init!='}';++init ) {
+			if ( *init < '0' || *init > '9' ) {
+				build->error = REGEX_SYNTAX_ERROR;
+				return init;
+			}
+			*iter = *init;
+			++ iter;
+		}
+		*iter = '\0';
+		high = atoi(buffer);
+		
+		for ( ;*init==' '||*init=='\t';++init );
+		
+		if ( *init != '}' ) {
+			build->error = REGEX_SYNTAX_ERROR;
+			return init;
+		}
+		
+	} else if ( *init != '}' ) {
+		build->error = REGEX_SYNTAX_ERROR;
+		return init;
+	}
+	
+	assign_quantifier( re, build, low, high );
+	
+	return init;
 }
 
 /* --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- 
@@ -349,41 +699,147 @@ regex* regex_create( const char* cc ) {
 	rebuilder* build = rebuilder_create();
 	
 	const char* tmp = cc;
-	char* buffer = (char*) malloc( 80 );
+	const char* buffer = tmp;
+	uint32 size = 0;
 	
-	while ( build->no_error == 0 &&  *tmp != '\0' ) {
+	while ( build->error == 0 &&  *tmp != '\0' ) {
 		if ( is_quantifier( *tmp ) ) {
+			if ( size > 0 ) {
+				-- size;
+				const char* next = buffer + size;
+				close_literal( m, buffer, &size );
+				size = 1;
+				close_literal( m, next, &size );
+			}
 			
+			switch ( *tmp ) {
+				case '*':
+					assign_quantifier( m, build, 0, -1 );
+					break;
+				case '?':
+					assign_quantifier( m, build, 0, 1 );
+					break;
+				case '+':
+					assign_quantifier( m, build, 1, -1 );
+					break;
+				case '{':
+					tmp = assign_quan_span( m, build, tmp );
+					break;
+			}
+			
+			++ tmp;
+			buffer = tmp;
 		} else switch ( *tmp ) {
 			case '(':
-				close_literal( m, buffer );
+				close_literal( m, buffer, &size );
 				create_group( m, build );
 				++ tmp;
+				buffer = tmp;
 				break;
 			case ')':
-				close_literal( m, buffer );
+				close_literal( m, buffer, &size );
 				close_group( m, build );
 				++ tmp;
+				buffer = tmp;
 				break;
 			case '|':
-				close_literal( m, buffer );
+				close_literal( m, buffer, &size );
 				move_chain( m, build );
 				++ tmp;
+				buffer = tmp;
 				break;
-			/*case '.':
-				
-			case '^':
-				
-			case '$':
-				
 			case '[':
-				
+				++ tmp;
+			case '.':
+				close_literal( m, buffer, &size );
+				tmp = create_charset( m, build, tmp );
+				buffer = tmp;
+				break;
 			case ']':
+				build->error = REGEX_EXTRA_CLOSE_CHARSET;
+				break;
+			/*
+			case '^':
+			case '$':
 			*/	
 			default:
-				printf( "DEFAULT" );
+				++ size;
+				++ tmp;
 		}
 	}
 	
-	return NULL;
+	if ( build->error != 0 ) {
+		printf( "ERROR %d!\n", build->error );
+		return NULL;
+	} else {
+		close_literal( m, buffer, &size );
+		close_regex( m );
+	}
+	
+	return m;
+}
+
+static atom* regex_reset( regex* re, const char* val ) {
+	re->strstart = val;
+	array_clear32( re->working, 0 );
+	stack_clear( re->track_atom );
+	stack_clear( re->track_string );
+	return re->initial;
+}
+substr* regex_match( regex* re, const char* str ) {
+	atom* this = regex_reset( re, str );
+	
+	printf( "Begin search with %p\n", this );
+	printf( "Array %p to %p\n", re->working->data, re->working->data + re->working->size );
+	
+	const char* istr = str;
+	uint32 iter = 0;
+	while ( *str != '\0' && iter < 80 && this->data != NULL ) {
+		atom* old = this;
+		const char* out = this->func( &this, str );
+		if ( this == NULL ) { // match failed
+			if ( stack_size( re->track_atom ) != 0 ) {
+				
+				atom* topatom = (atom*) stack_top( re->track_atom );
+				const char* topstr = (const char*) stack_top( re->track_string );
+				
+				uint32 begin = topatom->info->working / sizeof( uint32 ) + 1;
+				uint32 end = old->info->working / sizeof( uint32 );
+				
+				printf( "RESETTING TO TOP OF STACK %p AND %c (CLEARED %d TO %d)\n", topatom, *topstr, begin, end );
+				
+				for ( ;begin<=end;++begin )
+					((uint32*)re->working->data)[begin] = 0;
+				
+				this = topatom;
+				str = topstr;
+				
+			} else {
+				
+				printf( "Match fail for %p; RESETTING\n", this );
+				++ istr;
+				this = regex_reset( re, istr );
+				str = istr;
+				
+			}
+		} else {
+			str = out;
+		}
+		fflush( NULL );
+		++ iter;
+	}
+	if ( istr == '\0' ) {
+		printf( "COULD NOT FIND!" );
+		return NULL;
+	} else {
+		printf( "MATCH FOUND!" );
+		substr* sub = (substr*) malloc( sizeof( substr ) );
+		sub->begin = istr;
+		sub->end = str;
+		return sub;
+	}
+}
+
+int regex_destroy( regex* re ) {
+	return 0;
 }

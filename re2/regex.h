@@ -5,21 +5,28 @@
 	#define REGEX_FUNCTION(x,y,z) x __declspec(dllexport) y z
 	#define REGEX_EXPORT __declspec(dllexport)
 #else
-	#define REGEX_FUNCTION(x,y,z) x __declspec(dllimport) y z
-	#define REGEX_EXPORT __declspec(dllimport)
+	/*#define REGEX_FUNCTION(x,y,z) x __declspec(dllimport) y z
+	#define REGEX_EXPORT __declspec(dllimport)*/
+	#define REGEX_FUNCTION(x,y,z) x y z
+	#define REGEX_EXPORT
 #endif
 
-#define REGEX_EXTRA_CLOSE_GROUP 501
-#define REGEX_CHAIN_HAS_NO_INITIAL 502
+#define REGEX_SYNTAX_ERROR 100
 
-typedef char int8;
-typedef unsigned char uint8;
-typedef unsigned char bool;
-typedef short uint16;
-typedef unsigned short int16;
-typedef int int32;
-typedef unsigned int uint32;
-typedef unsigned int* uint32_out;
+#define REGEX_EXTRA_CLOSE_GROUP 	501
+#define REGEX_EXTRA_CLOSE_CHARSET 	502
+#define REGEX_CHAIN_HAS_NO_INITIAL 	503
+#define REGEX_QUANTIFIER_TO_NONE 	504
+#define REGEX_INCORRECT_CHAR_SPAN 	505
+
+typedef char 			int8;
+typedef unsigned char 	uint8;
+typedef unsigned char 	bool;
+typedef short 			uint16;
+typedef unsigned short 	int16;
+typedef int 			int32;
+typedef unsigned int 	uint32;
+typedef unsigned int* 	uint32_out;
 
 uint32 next_pow2(uint32 a);
 
@@ -39,7 +46,7 @@ typedef struct quantifier_t quantifier;
 typedef struct atom_t atom;
 typedef struct regex_t regex;
 
-typedef const char* (*recheckfunc)( atom*, const char* );
+typedef const char* (*recheckfunc)( atom**, const char* );
 typedef void (*rekillfunc)( void* );
 typedef int (*reprintfunc)( void* );
 
@@ -54,7 +61,8 @@ struct array_t {
 	uint32 alloc;
 };
 struct charset_t {
-	uint32 data[8]; 
+	int32 refcount;
+	uint32 data[8];
 };
 
 struct substr_t {
@@ -64,9 +72,9 @@ struct substr_t {
 	uint32 char_number; // character number on line in original file
 };
 struct quantifier_t {
-	int32 lower; 	 // lower satisfied conditions
+	uint32 lower; 	 // lower satisfied conditions
 	int32 upper;	 // upper satisfied conditions
-	uint32* working; // the number of repeats already found
+	uint32 working;  // the number of repeats already found
 };
 struct atom_t {
 	regex* parent;		// parent regex struct 
@@ -80,12 +88,12 @@ struct atom_t {
 };
 
 struct regex_t {
-	const char* strstart;
-	atom* initial;
-	atom* current;
-	stack* track_atom;
-	stack* track_string;
-	array* working;
+	const char* strstart;	// testing string root
+	atom* initial;			// first atom
+	atom* current;			// working atom
+	stack* track_atom;		// return to these atoms when a match fails
+	stack* track_string;	// string location associated with the atom stack
+	array* working;			// array of quantifiers (for quick zeroing)
 };
 
 /* Use these functions */
