@@ -6,6 +6,8 @@
 
 char* open_file( const char* fname ) {
 	FILE *stream = fopen(fname, "rb");
+	if ( stream == NULL )
+		return NULL;
 	char *contents;
 
 	fseek(stream, 0L, SEEK_END);
@@ -45,11 +47,17 @@ void display_re( regex* re ) {
 
 int main( int argc, char** argv ) {
 	char* f = open_file( argv[1] );
+	if ( f == NULL )
+		return EXIT_FAILURE;
 	
+	printf( "Creating!\n" );
+	fflush( NULL );
 	regex* re = regex_create( f );
 	
 	if ( re != NULL ) {
+		printf( "Created!" );
 		printf( "\n\n\n" );
+		fflush( NULL );
 		//const char* str = "HelloGoodFlower,BushandTree.GoodHelloFlowerIsBushHelloooooooFlowerTreeBushHello";
 		const char* str = "HelloooooooAABBCCABCHello";
 		substr* loc = regex_match( re, str );

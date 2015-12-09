@@ -38,7 +38,6 @@ struct quantifier_t;
 struct atom_t;
 struct regex_t;
 
-typedef struct stack_t stack;
 typedef struct array_t array;
 typedef struct charset_t charset;
 typedef struct substr_t substr;
@@ -50,11 +49,6 @@ typedef const char* (*recheckfunc)( atom**, const char* );
 typedef void (*rekillfunc)( void* );
 typedef int (*reprintfunc)( void* );
 
-struct stack_t {
-	void** data;
-	uint32 size;
-	uint32 alloc;
-};
 struct array_t {
 	uint8* data;
 	uint32 size;
@@ -72,9 +66,10 @@ struct substr_t {
 	uint32 char_number; // character number on line in original file
 };
 struct quantifier_t {
-	uint32 lower; 	 // lower satisfied conditions
-	int32 upper;	 // upper satisfied conditions
-	uint32 working;  // the number of repeats already found
+	uint32 lower;	// lower satisfied conditions
+	int32 upper;	// upper satisfied conditions
+	uint32 index;	// index in regex::working
+	array* working; // the number of repeats already found
 };
 struct atom_t {
 	regex* parent;		// parent regex struct 
@@ -91,8 +86,8 @@ struct regex_t {
 	const char* strstart;	// testing string root
 	atom* initial;			// first atom
 	atom* current;			// working atom
-	stack* track_atom;		// return to these atoms when a match fails
-	stack* track_string;	// string location associated with the atom stack
+	array* track_atom;		// return to these atoms when a match fails
+	array* track_string;	// string location associated with the atom stack
 	array* working;			// array of quantifiers (for quick zeroing)
 };
 

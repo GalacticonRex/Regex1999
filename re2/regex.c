@@ -10,50 +10,6 @@ static inline uint32 max32( uint32 a, uint32 b ) {
 	return ( a > b ) ? (a) : (b);
 }
 
-static stack* stack_create() {
-	stack* tmp = (stack*) malloc( sizeof(stack) );
-	tmp->data = NULL;
-	tmp->size = 0;
-	tmp->alloc = 0;
-	return tmp;
-}
-static void stack_clear( stack* st ) {
-	st->size = 0;
-}
-static void stack_set( stack* st, void* ptr ) {
-	if ( st->size == 0 )
-		return;
-	st->data[st->size-1] = ptr;
-}
-static void* stack_top( stack* st ) {
-	if ( st->size == 0 )
-		return NULL;
-	return st->data[st->size-1];
-}
-static void stack_push( stack* st, void* ptr ) {
-	if ( st->alloc <= st->size + 1 ) {
-		uint32 tmp = max32( 4, st->alloc * 2 );
-		st->data = (void**) realloc( st->data, tmp * sizeof( void* ) );
-		if ( st->data == NULL ) {
-			printf( "could not re-allocate stack to %d elements", tmp );
-			exit( -18 );
-		}
-		st->alloc = tmp;
-	}
-	st->data[st->size] = ptr;
-	st->size ++ ;
-}
-static void* stack_pop( stack* st ) {
-	if ( st->size == 0 )
-		return NULL;
-	void* tmp = stack_top( st );
-	st->size -- ;
-	return tmp;
-}
-static int stack_size( stack* st ) {
-	return st->size;
-}
-
 static array* array_create() { 
 	array* tmp = (array*) malloc( sizeof(array) );
 	tmp->data = NULL;
@@ -73,6 +29,7 @@ static void array_clear32( array* arr, uint32 val ) {
 	for ( i=0;i<len;++i )
 		data[i] = val;
 }
+
 static uint8 array_get8( array* arr, uint32 index ) {
 	if ( index >= arr->size )
 		return 0;
@@ -84,6 +41,39 @@ static uint32 array_get32( array* arr, uint32 index ) {
 		return 0;
 	return ((uint32*)arr->data)[index];
 }
+static void* array_getptr( array* arr, uint32 index ) {
+	uint32 r_id = (index+1) * sizeof( void* );
+	if ( r_id > arr->size )
+		return 0;
+	return ((void**)arr->data)[index];
+}
+
+static uint32 array_size32( array* arr ) {
+	return arr->size / sizeof(uint32);
+}
+static uint32 array_sizeptr( array* arr ) {
+	return arr->size / sizeof(void*);
+}
+
+static uint8* array_top8( array* arr, uint32 index ) {
+	if ( index >= arr->size )
+		return 0;
+	return &(arr->data[arr->size-index-1]);
+}
+static uint32* array_top32( array* arr, uint32 index ) {
+	uint32 r_id = (index+1) * sizeof( uint32 );
+	if ( r_id > arr->size )
+		return 0;
+	return &(((uint32*)arr->data)[arr->size/sizeof(uint32)-index-1]);
+}
+static void** array_topptr( array* arr, uint32 index ) {
+	uint32 r_id = (index+1) * sizeof( void* );
+	if ( r_id > arr->size )
+		return 0;
+	printf( "Getting Top Pointer from Index %d out of %d\n", arr->size/sizeof(void*)-index-1, arr->size/sizeof(void*) );
+	return &(((void**)arr->data)[arr->size/sizeof(void*)-index-1]);
+}
+
 static void array_realloc( array* arr, uint32 size ) {
 	if ( arr->alloc <= arr->size + size ) {
 		uint32 tmp = max32( 16, arr->alloc * 2 );
@@ -95,6 +85,7 @@ static void array_realloc( array* arr, uint32 size ) {
 		arr->alloc = tmp;
 	}
 }
+
 static void array_append8( array* arr, uint8 object ) {
 	array_realloc( arr, 1 );
 	arr->data[arr->size] = object;
@@ -105,6 +96,39 @@ static void array_append32( array* arr, uint32 object ) {
 	uint32 offset = arr->size % sizeof( uint32 );
 	((uint32*)(arr->data+offset))[arr->size/sizeof(uint32)] = object;
 	arr->size += sizeof( uint32 );
+}
+static void array_appendptr( array* arr, void* object ) {
+	array_realloc( arr, sizeof( void* ) );
+	uint32 offset = arr->size % sizeof( void* );
+	((void**)(arr->data+offset))[arr->size/sizeof(void*)] = object;
+	arr->size += sizeof( void* );
+}
+
+static void array_push8( array* arr, uint8 object ) {
+	array_append8( arr, object );
+}
+static void array_push32( array* arr, uint32 object ) {
+	array_append32( arr, object );
+}
+static void array_pushptr( array* arr, void* object ) {
+	array_appendptr( arr, object );
+}
+static void array_pop8( array* arr ) {
+	-- arr->size;
+}
+static void array_pop32( array* arr ) {
+	arr->size -= sizeof( uint32 );
+}
+static void array_popptr( array* arr ) {
+	arr->size -= sizeof( void* );
+}
+static void array_print( array* arr ) {
+	printf( "{ " );
+	uint32 i;
+	for ( i=0;i<arr->size;i++ ) {
+		printf( "%02x ", arr->data[i] );
+	} printf( "}\n" );
+	fflush( NULL );
 }
 
 
@@ -182,16 +206,16 @@ struct atom_start_line_t {
 
 struct rebuilder_t {
 	int error;		// error value
-	stack* root;	// group origin (atom*)
-	stack* subroot;	// chain origin (atom*)
+	array* root;	// group origin (atom*)
+	array* subroot;	// chain origin (atom*)
 };
 typedef struct rebuilder_t rebuilder;
 
 static rebuilder* rebuilder_create() {
 	rebuilder* re = (rebuilder*) malloc( sizeof(rebuilder) );
 	re->error = 0;
-	re->root = stack_create();
-	re->subroot = stack_create();
+	re->root = array_create();
+	re->subroot = array_create();
 	return re;
 }
 
@@ -201,7 +225,7 @@ static rebuilder* rebuilder_create() {
 static const char* compare_literal( atom** reference, const char* str ) {
 	atom* input = *reference;
 	
-	uint32* working = (uint32*)(input->parent->working->data + input->info->working);
+	uint32* working = array_top32( input->info->working, 0 );
 	if ( input->info->upper != -1 && *working >= input->info->upper ) {
 		(*reference) = input->failure;
 		return str;
@@ -228,8 +252,8 @@ static const char* compare_literal( atom** reference, const char* str ) {
 	} while ( *working < input->info->lower );
 	
 	if ( input->info->upper == -1 || *working < input->info->upper ) {
-		stack_push( input->parent->track_atom, (void*)input );
-		stack_push( input->parent->track_string, (void*)str );
+		array_pushptr( input->parent->track_atom, (void*)input );
+		array_pushptr( input->parent->track_string, (void*)str );
 	}
 	
 	(*reference) = input->success;
@@ -248,7 +272,7 @@ static int print_literal( void* addr ) {
 static const char* compare_charset( atom** reference, const char* str ) {
 	atom* input = *reference;
 	
-	uint32* working = (uint32*)(input->parent->working->data + input->info->working);
+	uint32* working = array_top32( input->info->working, 0 );
 	if ( input->info->upper != -1 && *working >= input->info->upper ) {
 		(*reference) = input->failure;
 		return str;
@@ -259,7 +283,7 @@ static const char* compare_charset( atom** reference, const char* str ) {
 	
 	do {
 		
-		printf( "Test this charset %c\n", *str );
+		printf( "Test this charset against %c (%d out of %d)\n", *str, *working, input->info->upper );
 		uint32 found = charset_check( cset, *str );
 		if ( (data->exclude && found) || (!(data->exclude)&&!found) ) {
 			(*reference) = input->failure;
@@ -272,8 +296,8 @@ static const char* compare_charset( atom** reference, const char* str ) {
 	} while ( *working < input->info->lower );
 	
 	if ( input->info->upper == -1 || *working < input->info->upper ) {
-		stack_push( input->parent->track_atom, (void*)input );
-		stack_push( input->parent->track_string, (void*)str );
+		array_pushptr( input->parent->track_atom, (void*)input );
+		array_pushptr( input->parent->track_string, (void*)str );
 	}
 	
 	printf( "Charset matched!\n" );
@@ -307,7 +331,9 @@ static const char* compare_group_init( atom** reference, const char* str ) {
 	atom_group_init* gr = (atom_group_init*) input->data;
 	gr->hit = 1;
 	
-	uint32* working = (uint32*)(input->parent->working->data + input->info->working);
+	uint32* working = array_top32( input->info->working, 0 );
+	printf( "Enter Group %p (%d out of %d)\n", input, *working, input->info->upper );
+	
 	if ( input->info->upper == -1 || *working < input->info->upper )
 		(*reference) = input->success;
 	else
@@ -331,7 +357,7 @@ static const char* compare_group_final( atom** reference, const char* str ) {
 	atom* init = gr->start;
 	atom_group_init* begin = (atom_group_init*) init->data;
 	
-	uint32* working = (uint32*)(input->parent->working->data + input->info->working);
+	uint32* working = array_top32( input->info->working, 0 );
 	if ( begin->hit ) {
 		++ (*working);
 		begin->hit = 0;
@@ -340,8 +366,8 @@ static const char* compare_group_final( atom** reference, const char* str ) {
 	if ( *working < input->info->lower ) {
 		regex* parent = input->parent;
 		
-		uint32 start = input->info->working / sizeof( uint32 );
-		uint32 end = gr->scandex / sizeof( uint32 );
+		uint32 start = input->info->index;
+		uint32 end = gr->scandex;
 		
 		for ( ;start<end;++start )
 			((uint32*)parent->working->data)[start] = 0;
@@ -349,8 +375,8 @@ static const char* compare_group_final( atom** reference, const char* str ) {
 		(*reference) = init;
 	} else {
 		if ( *working == -1 || *working < input->info->upper ) {
-			stack_push( input->parent->track_atom, (void*)init );
-			stack_push( input->parent->track_string, (void*)str );
+			array_pushptr( input->parent->track_atom, (void*)init );
+			array_pushptr( input->parent->track_string, (void*)str );
 		}
 		(*reference) = input->success;
 	}
@@ -384,9 +410,10 @@ static atom* atom_create( regex* p,
 		quantifier* q = (quantifier*) malloc( sizeof(quantifier) );
 			q->lower = 1;
 			q->upper = 1;
-			q->working = p->working->size;
-			printf( "Working: %d\n", q->working / sizeof( uint32 ) );
-			array_append32( p->working, 0 );
+			q->index = array_sizeptr( p->working );
+			q->working = array_create();
+			array_append32( q->working, 0 );
+			array_appendptr( p->working, q->working );
 		a->info = q;
 	} else
 		a->info = quan;
@@ -433,18 +460,20 @@ static void link_to_prev( regex* re, atom* natom ) {
 
 // Iterates backwards through the subroots to build a failure OR chain
 static void link_options( regex* re, rebuilder* build, atom* final ) {
-	atom* root = stack_top( build->root );
-	atom* endsub = stack_top( build->subroot );
+	atom* root = (atom*) *array_topptr( build->root, 0 );
+	atom* endsub = (atom*) *array_topptr( build->subroot, 0 );
 	while ( endsub != root ) {
 		atom* tmp = endsub->success;
 		
-		stack_pop( build->subroot );
-		atom* beginsub = stack_top( build->subroot );
+		array_popptr( build->subroot );
+		atom* beginsub = (atom*) *array_topptr( build->subroot, 0 );
 		atom* iterate = beginsub->success;
 		printf( "    Link %p to %p\n", iterate, endsub );
+		fflush( NULL );
 		
 		while ( iterate != tmp ) {
 			printf( "    %p fails to %p\n", iterate, tmp );
+			fflush( NULL );
 			iterate->failure = tmp;
 			iterate = iterate->success;
 		}
@@ -481,7 +510,7 @@ static void close_literal( regex* re, const char* buffer, uint32_out size ) {
 	
 	link_to_prev( re, ret );
 	
-	printf( "%p = '%s'\n", ret, lit->data );
+	printf( "'%s' --> %p\n", lit->data, ret );
 }
 
 // Create an open group node
@@ -495,10 +524,13 @@ static void create_group( regex* re, rebuilder* build ) {
 							 destroy_group_init, 
 							 print_group_init,
 							 NULL );
+	printf( "GroupInit %p = %p\n", gr, ret->data );
 	
 	// assign new root
-	stack_push( build->root, ret );
-	stack_push( build->subroot, ret );
+	array_pushptr( build->root, ret );
+	array_pushptr( build->subroot, ret );
+	
+	array_print( build->root );
 	
 	link_to_prev( re, ret );
 	
@@ -513,24 +545,40 @@ static void close_group( regex* re, rebuilder* build ) {
 		return;
 	}
 	
+	printf( "AAAA\n" );
+	fflush( NULL );
 	atom_group_final* gr = (atom_group_final*) malloc( sizeof(atom_group_final) );
-	gr->start = (atom*) stack_top( build->root );
-	gr->scandex = re->working->size;
+	gr->start = (atom*) *array_topptr( build->root, 0 );
+	gr->scandex = array_sizeptr( re->working );
 	atom* ret = atom_create( re,
 							 compare_group_final, 
 							 gr, 
 							 destroy_group_final, 
 							 print_group_final,
 							 gr->start->info );
+	printf( "Self --> %p\n", ret );
+	printf( "Strt --> %p\n", gr->start );
+	fflush( NULL );
 	
+	array_print( build->root );
+	printf( "%p->%p\n", gr->start, gr->start->data );
+	fflush( NULL );
 	((atom_group_init*)(gr->start->data))->end = ret;
+	
+	printf( "AAAA\n" );
+	fflush( NULL );
 	
 	link_to_prev( re, ret );
 	
+	printf( "AAAA\n" );
+	fflush( NULL );
+	fflush( NULL );
+	
 	link_options( re, build, ret );
-	stack_pop( build->root );
+	array_popptr( build->root );
 	
 	printf( "%p Close %p\n", ret, gr->start );
+	fflush( NULL );
 }
 static void move_chain( regex* re, rebuilder* build ) {
 	if ( re->current == NULL || is_group_init( re->current ) ) {
@@ -540,7 +588,7 @@ static void move_chain( regex* re, rebuilder* build ) {
 	
 	printf( "    With Subroot %p\n", re->current );
 	
-	stack_push( build->subroot, re->current );
+	array_pushptr( build->subroot, re->current );
 }
 static const char* create_charset( regex* re, rebuilder* build, const char* str ) {
 	if ( *str == '.' ) {
@@ -567,6 +615,7 @@ static const char* create_charset( regex* re, rebuilder* build, const char* str 
 		data->checkset = cset;
 		
 		if ( *str == '^' ) {
+			printf( "not " );
 			data->exclude = 1;
 			++ str;
 		} else
@@ -574,8 +623,10 @@ static const char* create_charset( regex* re, rebuilder* build, const char* str 
 		
 		char last2 = '\0';
 		char last = *str;
+		printf( "%c", *str );
 		++ str;
 		for ( ;*str!='\0'&&*str!=']';++str ) {
+			printf( "%c", *str );
 			if ( last == '\0' )
 				continue;
 			if ( last == '-' ) {
@@ -605,7 +656,10 @@ static const char* create_charset( regex* re, rebuilder* build, const char* str 
 								 destroy_charset,
 								 print_charset,
 								 NULL );
+		
 		link_to_prev( re, ret );
+		
+		printf( " --> %p\n", ret );
 		
 		return str;
 	}
@@ -692,8 +746,8 @@ regex* regex_create( const char* cc ) {
 	m->initial = NULL;
 	m->current = NULL;
 	
-	m->track_atom = stack_create();
-	m->track_string = stack_create();
+	m->track_atom = array_create();
+	m->track_string = array_create();
 	m->working = array_create();
 	
 	rebuilder* build = rebuilder_create();
@@ -703,6 +757,8 @@ regex* regex_create( const char* cc ) {
 	uint32 size = 0;
 	
 	while ( build->error == 0 &&  *tmp != '\0' ) {
+		printf( "%c\n", *tmp );
+		fflush( NULL );
 		if ( is_quantifier( *tmp ) ) {
 			if ( size > 0 ) {
 				-- size;
@@ -781,16 +837,15 @@ regex* regex_create( const char* cc ) {
 
 static atom* regex_reset( regex* re, const char* val ) {
 	re->strstart = val;
-	array_clear32( re->working, 0 );
-	stack_clear( re->track_atom );
-	stack_clear( re->track_string );
+	array_clear8( re->working, 0 );
+	array_clear8( re->track_atom, 0 );
+	array_clear8( re->track_string, 0 );
 	return re->initial;
 }
 substr* regex_match( regex* re, const char* str ) {
 	atom* this = regex_reset( re, str );
 	
 	printf( "Begin search with %p\n", this );
-	printf( "Array %p to %p\n", re->working->data, re->working->data + re->working->size );
 	
 	const char* istr = str;
 	uint32 iter = 0;
@@ -798,18 +853,26 @@ substr* regex_match( regex* re, const char* str ) {
 		atom* old = this;
 		const char* out = this->func( &this, str );
 		if ( this == NULL ) { // match failed
-			if ( stack_size( re->track_atom ) != 0 ) {
+			if ( array_sizeptr( re->track_atom ) != 0 ) {
 				
-				atom* topatom = (atom*) stack_top( re->track_atom );
-				const char* topstr = (const char*) stack_top( re->track_string );
+				fflush( NULL );
+				atom* topatom = (atom*) *array_topptr( re->track_atom, 0 );
+				const char* topstr = (const char*) *array_topptr( re->track_string, 0 );
 				
-				uint32 begin = topatom->info->working / sizeof( uint32 ) + 1;
-				uint32 end = old->info->working / sizeof( uint32 );
+				array_popptr( re->track_atom );
+				array_popptr( re->track_string );
+				
+				printf( "Pop off %p and %s\n", topatom, topstr );
+				fflush( NULL );
+				
+				uint32 begin = topatom->info->index + 1;
+				uint32 end = old->info->index;
 				
 				printf( "RESETTING TO TOP OF STACK %p AND %c (CLEARED %d TO %d)\n", topatom, *topstr, begin, end );
+				fflush( NULL );
 				
 				for ( ;begin<=end;++begin )
-					((uint32*)re->working->data)[begin] = 0;
+					array_pop32( array_getptr( re->working->data, begin ) );
 				
 				this = topatom;
 				str = topstr;
