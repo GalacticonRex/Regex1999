@@ -1,2 +1,0 @@
-LN:    2 | CH:      5 || " chat"
-LN:    3 | CH:      1 || " knat"

@@ -1,0 +1,11 @@
+Regex Parser
+
+ABANDON ALL HOPE
+re -- CPP version
+	* Too greedy
+
+WORKING ON THIS ONE
+re2 -- C version
+	* I have to like... get used to C again
+	* Implement stack to avoid greed
+		o Only consume if the minimum is not satisfied

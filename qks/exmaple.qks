@@ -1,0 +1,38 @@
+//
+// Example QKS File
+//
+// Each expression:
+//
+//		"regex" ? ... : ...
+//
+// splits the supplied text
+// into matches or non-matches. These objects become the objects
+// that are passed on to the subsequent "..."
+// 		The "..." is run in a depth first fashion on each object that
+// is passed to it. When a '%' character is encountered, this signals
+// the end of the splitting process and the string object is converted
+//  into a token. The '%' is as follows:
+//
+//		% "name" "syntax1" | "syntax2" | ...
+//
+
+// Readable
+"\n|;" ?
+	
+	% ";" "." 
+	
+	:
+	
+	"[A-Za-z]*" ?
+		
+		% "Name" "." 
+		
+		:
+		
+		% "Whitespace" "."
+			
+// Compressed
+
+"\n|;"?%";",".":"[A-Za-z]*"?%"Name",".":%"Whitespace"
+			
+

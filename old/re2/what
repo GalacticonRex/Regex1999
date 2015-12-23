@@ -1,0 +1,60 @@
+
+
+
+	NODE
+	atom*
+	atom*
+ const char*
+   uint32
+
+Hello+(Flower|[ABC]{1,2}|Bush){2,3}Hello
+
+Hell 	{1,1}
+o 		{1,inf}
+GROUP	{2,3}
+	Flower	{1,1}
+	[ABC]	{1,2}
+	Bust	{1,1}
+Hello	{1,1}
+
+HelloooooooAABBCCABCHello
+
+Hell GOOD			. Hell(1)
+o GOOD				. Hell(1) -> o(1)
+GROUP NONE			.
+o GOOD				. Hell(1) -> o(2)
+GROUP NONE			.
+o GOOD				. Hell(1) -> o(3)
+GROUP NONE			.
+o GOOD				. Hell(1) -> o(4)
+GROUP NONE			.
+o GOOD				. Hell(1) -> o(5)
+GROUP NONE			.
+o GOOD				. Hell(1) -> o(6)
+GROUP NONE			.
+o GOOD				. Hell(1) -> o(7) 
+GROUP				. Hell(1) -> o(7) -> GROUP(0)
+	Flower NO 		. 
+	[ABC] GOOD		. Hell(1) -> o(7) -> GROUP(0) ->
+										          -> [ABC](1)
+GROUP				. Hell(1) -> o(7) -> GROUP(0) ->          -> END(0)
+										 		  -> [ABC](1) ->
+	Flower NO 		.
+	[ABC] GOOD		. Hell(1) -> o(7) -> GROUP(0) -> [ABC](1) -> GROUP(0) -> [ABC](1)
+Hello NONE			.
+GROUP				. Hell(1) -> o(7) -> GROUP(0) -> [ABC](1) -> GROUP(0) -> [ABC](1) -> GROUP(0)
+	Flower NO 		.
+	[ABC] GOOD		. Hell(1) -> o(7) -> GROUP(0) -> [ABC](1) -> GROUP(0) -> [ABC](1) -> GROUP(0) -> [ABC](1)
+	
+	
+	
+	
+GCF GCF L
+GCF GCF GCF L
+GCF GCF GCCF L
+GCF GCCF
+GCF GCCF GCF L
+GCF GCCF 
+GCF 
+GCCF GCCF 
+GCCF GCCF GCCF L
